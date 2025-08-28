@@ -1,6 +1,20 @@
 
 clc; clear; close all;
 
+
+set(groot, 'DefaultAxesFontSize', 15); % Set default font size for axes 
+set(groot, 'DefaultTextFontSize', 15); % Set default font size for text 
+set(groot, 'DefaultLineLineWidth', 2); % Set default line width to 2 
+set(groot, 'DefaultAxesLineWidth', 1.2); 
+set(groot, 'DefaultLineMarkerSize', 8); % Set default line width to 2 
+set(groot, 'DefaultAxesFontName', 'Times New Roman'); 
+set(groot, 'DefaultTextFontName', 'Times New Roman'); % For text objects 
+set(groot, 'DefaultUicontrolFontName', 'Times New Roman'); % For UI controls
+
+
+addpath("c:/Users/abdul/matlab2tikz/src/")
+
+
 %% ==========================
 %  Main Script to Setup Env
 %  ==========================
@@ -85,12 +99,13 @@ SNR_THRESH_dB = -5;     % seuil SNR (dB) pour TOUS les SGW
 fprintf('Selected P_UAV = %.6g W | EE(selected) = %.6g (SNR thresh = %.2f dB)\n', ...
     P_UAV_opt, EE_opt, SNR_THRESH_dB);
 
-% === Only the two requested plots ===
-plot_policy_EE_and_SNR(hist);
+
 
 %% ===== 5) Plots =====
 
 %==================== MAIN SCRIPT ====================%
+% === Only the two requested plots ===
+plot_policy_EE_and_SNR(hist);
 % Assumes: env (with fields PV, Uv_R, Piv), P_F_0, pF_opt are defined.
 
 % Plot environment with softened Z scale and auto-fit XY
@@ -110,7 +125,7 @@ zmax = max([zl(2), pF_opt(3)*1.2, max(env.PV(:,3))*1.2]);
 zlim([0, zmax]);
 
 legend('Location','best'); 
-title('Environment and UAV optimal placement');
+%title('Environment and UAV optimal placement');
 grid on; hold off;
 
 
@@ -121,7 +136,7 @@ iters = 1:info.iters;
 figure('Color','w'); 
 plot(iters, info.hist.EE, 'LineWidth', 2);
 xlabel('Iteration'); ylabel('Energy efficiency  [bps/W]');
-title('PSCA Objective Evolution'); 
+%title('PSCA Objective Evolution'); 
 grid on;
 
 % (c) Power evolution per gateway
@@ -130,7 +145,8 @@ plot(iters, info.hist.P, 'LineWidth', 1.8);
 xlabel('Iteration'); ylabel('Transmit power  [W]');
 legend(arrayfun(@(v)sprintf('P_%d',v), 1:size(info.hist.P,2), 'UniformOutput', false), ...
        'Location','best');
-title('Power Evolution per Gateway'); grid on;
+%title('Power Evolution per Gateway'); 
+grid on;
 
 % (d) Rate evolution (total + per gateway)
 figure('Color','w'); 
@@ -139,7 +155,8 @@ plot(iters, info.hist.Rv, '--', 'LineWidth', 1.5);
 lgd = [{'Total SR'}, arrayfun(@(v)sprintf('R_%d',v), 1:size(info.hist.Rv,2), 'UniformOutput', false)];
 legend(lgd, 'Location','best');
 xlabel('Iteration'); ylabel('Rate  [bps]');
-title('Rate Evolution'); grid on; hold off;
+%title('Rate Evolution'); 
+grid on; hold off;
 
 
 % (e) SNR evolution 
@@ -153,9 +170,10 @@ lgd = [arrayfun(@(v)sprintf('SNR_%d',v), 1:size(info.hist.SNR,2), 'UniformOutput
 
 legend(lgd, 'Location','best');
 xlabel('Iteration'); ylabel('SNR');
-title('SNR Evolution'); grid on; hold off;
+% title('SNR Evolution'); 
+grid on; hold off;
 
- % ===== end main =====
+% ===== end main =====
 
 
 %% ================================
