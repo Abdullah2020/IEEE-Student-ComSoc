@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 import datetime
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 import logging
 
 # Configure logging
@@ -37,11 +37,11 @@ class PUFSimulator:
         return hashlib.sha256(combined).digest()[:16]  # 128-bit response
 
 class CertificateAuthority:
-    """Certificate Authority for issuing X.509 certificates with ECC P-192 (192-bit keys)"""
+    """Certificate Authority for issuing X.509 certificates with ECC P-256 (256-bit keys)"""
     
     def __init__(self):
-        # Use ECC P-192 for smaller key size
-        self.private_key = ec.generate_private_key(ec.SECP192R1())
+        # Use ECC P-256 for 256-bit keys
+        self.private_key = ec.generate_private_key(ec.SECP256R1())
         self.public_key = self.private_key.public_key()
         self.ca_cert = self._create_ca_certificate()
         
@@ -103,39 +103,151 @@ class CertificateAuthority:
         return cert
 
 class MessageProtocol:
-    """Handles message formatting and parsing"""
+    """Handles message formatting, parsing, and fragmentation"""
+    
+    MAX_FRAGMENT_SIZE = 255  # Maximum fragment size in bytes
+    
+    @staticmethod
+    def _fragment_data(data: bytes) -> List[bytes]:
+        """Fragment data into chunks of MAX_FRAGMENT_SIZE"""
+        fragments = []
+        for i in range(0, len(data), MessageProtocol.MAX_FRAGMENT_SIZE):
+            fragments.append(data[i:i + MessageProtocol.MAX_FRAGMENT_SIZE])
+        return fragments
+    
+    @staticmethod
+    def _reassemble_fragments(fragments: List[bytes]) -> bytes:
+        """Reassemble fragments into original data"""
+        return b''.join(fragments)
     
     @staticmethod
     def send_message(sock: socket.socket, msg_type: str, data: dict):
-        """Send a message"""
+        """Send a message with fragmentation support"""
         message = {'type': msg_type, 'data': data}
         message_json = json.dumps(message).encode('utf-8')
-        length = len(message_json)
-        sock.send(struct.pack('!I', length) + message_json)
+        
+        # Check if fragmentation is needed
+        if len(message_json) <= MessageProtocol.MAX_FRAGMENT_SIZE:
+            # Single fragment
+            MessageProtocol._send_single_message(sock, message_json, is_fragment=False)
+        else:
+            # Multiple fragments
+            fragments = MessageProtocol._fragment_data(message_json)
+            fragment_id = secrets.token_hex(8)  # Unique ID for this message
+            
+            print(f"📦 Fragmenting message into {len(fragments)} fragments (ID: {fragment_id})")
+            
+            # Send fragment count first
+            fragment_header = {
+                'fragment_id': fragment_id,
+                'total_fragments': len(fragments),
+                'fragment_index': -1,  # -1 indicates this is the header
+                'data': None
+            }
+            header_json = json.dumps(fragment_header).encode('utf-8')
+            MessageProtocol._send_single_message(sock, header_json, is_fragment=True)
+            
+            # Send each fragment
+            for i, fragment in enumerate(fragments):
+                fragment_msg = {
+                    'fragment_id': fragment_id,
+                    'total_fragments': len(fragments),
+                    'fragment_index': i,
+                    'data': fragment.decode('utf-8')
+                }
+                fragment_json = json.dumps(fragment_msg).encode('utf-8')
+                MessageProtocol._send_single_message(sock, fragment_json, is_fragment=True)
+    
+    @staticmethod
+    def _send_single_message(sock: socket.socket, data: bytes, is_fragment: bool):
+        """Send a single message or fragment"""
+        # Add fragment flag (1 byte) + length (4 bytes) + data
+        fragment_flag = b'\x01' if is_fragment else b'\x00'
+        length = len(data)
+        sock.send(fragment_flag + struct.pack('!I', length) + data)
     
     @staticmethod
     def receive_message(sock: socket.socket) -> Tuple[str, dict]:
-        """Receive a complete message"""
-        # Receive length
+        """Receive a complete message with fragmentation support"""
+        # Receive fragment flag
+        flag_data = sock.recv(1)
+        if len(flag_data) != 1:
+            raise ValueError("Failed to receive fragment flag")
+        
+        is_fragment = flag_data[0] == 1
+        
+        if not is_fragment:
+            # Single message
+            length_data = sock.recv(4)
+            if len(length_data) != 4:
+                raise ValueError("Failed to receive message length")
+            
+            length = struct.unpack('!I', length_data)[0]
+            message_data = MessageProtocol._receive_exact(sock, length)
+            message = json.loads(message_data.decode('utf-8'))
+            return message['type'], message['data']
+        else:
+            # Fragmented message
+            return MessageProtocol._receive_fragmented_message(sock)
+    
+    @staticmethod
+    def _receive_fragmented_message(sock: socket.socket) -> Tuple[str, dict]:
+        """Receive and reassemble a fragmented message"""
+        # Receive header first
         length_data = sock.recv(4)
-        if len(length_data) != 4:
-            raise ValueError("Failed to receive message length")
-        
         length = struct.unpack('!I', length_data)[0]
+        header_data = MessageProtocol._receive_exact(sock, length)
+        header = json.loads(header_data.decode('utf-8'))
         
-        # Receive message data
-        message_data = b''
-        while len(message_data) < length:
-            chunk = sock.recv(length - len(message_data))
+        if header['fragment_index'] != -1:
+            raise ValueError("Expected fragment header")
+        
+        fragment_id = header['fragment_id']
+        total_fragments = header['total_fragments']
+        fragments = [None] * total_fragments
+        
+        print(f"📥 Receiving {total_fragments} fragments (ID: {fragment_id})")
+        
+        # Receive all fragments
+        for _ in range(total_fragments):
+            # Receive fragment flag (should be 1)
+            flag_data = sock.recv(1)
+            if flag_data[0] != 1:
+                raise ValueError("Expected fragment flag")
+            
+            # Receive fragment
+            length_data = sock.recv(4)
+            length = struct.unpack('!I', length_data)[0]
+            fragment_data = MessageProtocol._receive_exact(sock, length)
+            fragment = json.loads(fragment_data.decode('utf-8'))
+            
+            if fragment['fragment_id'] != fragment_id:
+                raise ValueError("Fragment ID mismatch")
+            
+            index = fragment['fragment_index']
+            if 0 <= index < total_fragments:
+                fragments[index] = fragment['data'].encode('utf-8')
+        
+        # Reassemble message
+        complete_data = MessageProtocol._reassemble_fragments(fragments)
+        message = json.loads(complete_data.decode('utf-8'))
+        
+        print(f"✅ Message reassembled successfully")
+        return message['type'], message['data']
+    
+    @staticmethod
+    def _receive_exact(sock: socket.socket, length: int) -> bytes:
+        """Receive exactly 'length' bytes"""
+        data = b''
+        while len(data) < length:
+            chunk = sock.recv(length - len(data))
             if not chunk:
                 raise ValueError("Connection closed")
-            message_data += chunk
-        
-        message = json.loads(message_data.decode('utf-8'))
-        return message['type'], message['data']
+            data += chunk
+        return data
 
 class SecureChannel:
-    """Handles encrypted communication"""
+    """Handles encrypted communication with fragmentation support"""
     
     def __init__(self, session_key: bytes):
         self.session_key = session_key
@@ -158,17 +270,21 @@ class SecureChannel:
         return decryptor.update(ciphertext) + decryptor.finalize()
     
     def send_encrypted(self, sock: socket.socket, msg_type: str, data: dict):
-        """Send encrypted message"""
+        """Send encrypted message with fragmentation support"""
         message = {'type': msg_type, 'data': data}
         message_json = json.dumps(message).encode('utf-8')
         encrypted = self.encrypt(message_json)
-        sock.send(struct.pack('!I', len(encrypted)) + encrypted)
+        
+        # Use regular message protocol for encrypted data (it handles fragmentation)
+        MessageProtocol.send_message(sock, "ENCRYPTED", {"data": encrypted.hex()})
     
     def receive_encrypted(self, sock: socket.socket) -> Tuple[str, dict]:
-        """Receive encrypted message"""
-        length_data = sock.recv(4)
-        length = struct.unpack('!I', length_data)[0]
-        encrypted_data = sock.recv(length)
+        """Receive encrypted message with fragmentation support"""
+        msg_type, msg_data = MessageProtocol.receive_message(sock)
+        if msg_type != "ENCRYPTED":
+            raise ValueError("Expected encrypted message")
+        
+        encrypted_data = bytes.fromhex(msg_data["data"])
         decrypted = self.decrypt(encrypted_data)
         message = json.loads(decrypted.decode('utf-8'))
         return message['type'], message['data']
@@ -182,8 +298,8 @@ class Gateway:
         self.port = port
         self.logger = logging.getLogger(f"Gateway-{gateway_id}")
         
-        # Generate ECC P-192 key pair (192-bit)
-        self.private_key = ec.generate_private_key(ec.SECP192R1())
+        # Generate ECC P-256 key pair (256-bit)
+        self.private_key = ec.generate_private_key(ec.SECP256R1())
         self.public_key = self.private_key.public_key()
         
         # Log key size for verification
@@ -267,7 +383,7 @@ class Gateway:
         try:
             self.logger.info(f"Starting certificate authentication with {drone_id}")
             
-            # Send our certificate
+            # Send our certificate (this may be fragmented if large)
             cert_pem = self.certificate.public_bytes(serialization.Encoding.PEM).decode()
             MessageProtocol.send_message(client_socket, "CERT_GATEWAY", {"certificate": cert_pem})
             
@@ -363,8 +479,8 @@ class Gateway:
     
     def _perform_key_exchange(self, client_socket: socket.socket) -> bytes:
         """Perform ECDHE key exchange"""
-        # Generate ephemeral key pair (P-192 for smaller keys)
-        private_key = ec.generate_private_key(ec.SECP192R1())
+        # Generate ephemeral key pair (P-256 for 256-bit keys)
+        private_key = ec.generate_private_key(ec.SECP256R1())
         public_key = private_key.public_key()
         
         # Send our public key
@@ -426,8 +542,8 @@ class Drone:
         self.drone_id = drone_id
         self.logger = logging.getLogger(f"Drone-{drone_id}")
         
-        # Generate ECC P-192 key pair (192-bit)
-        self.private_key = ec.generate_private_key(ec.SECP192R1())
+        # Generate ECC P-256 key pair (256-bit)
+        self.private_key = ec.generate_private_key(ec.SECP256R1())
         self.public_key = self.private_key.public_key()
         
         # Log key size for verification
@@ -564,8 +680,8 @@ class Drone:
     
     def _complete_key_exchange(self, client_socket: socket.socket, msg_data: dict) -> bytes:
         """Complete key exchange"""
-        # Generate our key pair (P-192 for smaller keys)
-        private_key = ec.generate_private_key(ec.SECP192R1())
+        # Generate our key pair (P-256 for 256-bit keys)
+        private_key = ec.generate_private_key(ec.SECP256R1())
         public_key = private_key.public_key()
         
         # Load peer's public key
@@ -607,21 +723,89 @@ class Drone:
         secure_channel.send_encrypted(client_socket, "PUF_ENROLL_RESPONSE", {"response": response.hex()})
 
 
-def main():
-    """Main demonstration function"""
-    print("🚁 Drone-Gateway Authentication System Demo (192-bit ECC, Keys)")
+def create_large_test_message() -> dict:
+    """Create a large message to test fragmentation"""
+    # Create a message with multiple large fields to exceed 255 bytes
+    large_data = {
+        "mission_data": "A" * 200,  # 200 characters
+        "telemetry": "B" * 150,     # 150 characters  
+        "sensor_readings": "C" * 100, # 100 characters
+        "gps_coordinates": "D" * 80,   # 80 characters
+        "status_report": "This is a comprehensive status report that contains detailed information about the drone's current operational state, battery levels, sensor functionality, communication status, and mission progress. " * 3
+    }
+    return large_data
+
+
+def test_fragmentation():
+    """Test message fragmentation with large payloads"""
+    print("\n" + "=" * 70)
+    print("🧪 TESTING MESSAGE FRAGMENTATION")
     print("=" * 70)
     
+    # Create a test socket pair
+    import socketserver
+    
+    class TestHandler(socketserver.BaseRequestHandler):
+        def handle(self):
+            try:
+                # Receive the large message
+                msg_type, msg_data = MessageProtocol.receive_message(self.request)
+                print(f"✅ Received message type: {msg_type}")
+                print(f"📏 Message data size: {len(json.dumps(msg_data))} bytes")
+                
+                # Echo back confirmation
+                MessageProtocol.send_message(self.request, "ACK", {"received": True})
+            except Exception as e:
+                print(f"❌ Handler error: {e}")
+    
+    # Start test server
+    test_server = socketserver.ThreadingTCPServer(("localhost", 9999), TestHandler)
+    server_thread = threading.Thread(target=test_server.serve_forever, daemon=True)
+    server_thread.start()
+    
     try:
-        # Initialize Certificate Authority
+        # Test client
+        client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        client_socket.connect(("localhost", 9999))
+        
+        # Create and send large message
+        large_msg = create_large_test_message()
+        msg_size = len(json.dumps(large_msg))
+        print(f"📤 Sending large message ({msg_size} bytes)")
+        
+        MessageProtocol.send_message(client_socket, "LARGE_TEST", large_msg)
+        
+        # Receive confirmation
+        msg_type, msg_data = MessageProtocol.receive_message(client_socket)
+        if msg_type == "ACK" and msg_data.get("received"):
+            print("✅ Fragmentation test successful!")
+        
+        client_socket.close()
+        
+    except Exception as e:
+        print(f"❌ Fragmentation test failed: {e}")
+    finally:
+        test_server.shutdown()
+
+
+def main():
+    """Main demonstration function"""
+    print("🚁 Drone-Gateway Authentication System Demo (256-bit ECC Keys + Fragmentation)")
+    print("=" * 80)
+    
+    try:
+        # Test fragmentation first
+        test_fragmentation()
+        
+        # Initialize Certificate Authority with P-256
         ca = CertificateAuthority()
-        print("✓ Certificate Authority initialized with ECC P-192")
+        print("✓ Certificate Authority initialized with ECC P-256 (256-bit keys)")
         
         # Create Gateway
         gateway = Gateway("GW001")
         gateway_cert = ca.issue_certificate("GW001", gateway.public_key)
         gateway.set_certificate(gateway_cert, ca.ca_cert)
-        print("✓ Gateway GW001 created with 192-bit ECC keys")
+        print("✓ Gateway GW001 created with 256-bit ECC keys")
         
         # Create Drones with key size verification
         drone1 = Drone("DRONE001")
@@ -632,17 +816,21 @@ def main():
         drone2_cert = ca.issue_certificate("DRONE002", drone2.public_key)
         drone2.set_certificate(drone2_cert, ca.ca_cert)
         
-        print("✓ Drones DRONE001 and DRONE002 created with 192-bit ECC keys")
+        print("✓ Drones DRONE001 and DRONE002 created with 256-bit ECC keys")
         
         # Verify certificate sizes
         cert1_size = len(drone1_cert.public_bytes(serialization.Encoding.PEM))
         cert2_size = len(drone2_cert.public_bytes(serialization.Encoding.PEM))
         gateway_cert_size = len(gateway_cert.public_bytes(serialization.Encoding.PEM))
         
-        print(f"📊 Certificate Sizes:")
+        print(f"📊 Certificate Sizes (P-256):")
         print(f"   Gateway Certificate: {gateway_cert_size} bytes")
         print(f"   Drone1 Certificate:  {cert1_size} bytes") 
         print(f"   Drone2 Certificate:  {cert2_size} bytes")
+        print(f"   Max Fragment Size:   {MessageProtocol.MAX_FRAGMENT_SIZE} bytes")
+        
+        if cert1_size > MessageProtocol.MAX_FRAGMENT_SIZE:
+            print(f"   ⚠️  Certificates will be fragmented (>{MessageProtocol.MAX_FRAGMENT_SIZE} bytes)")
         
         # Start gateway server
         server_thread = threading.Thread(target=gateway.start_server, daemon=True)
@@ -651,9 +839,9 @@ def main():
         print("✓ Gateway server started on localhost:8282")
         time.sleep(1)  # Allow server to start
         
-        print("\n" + "=" * 70)
-        print("🔐 FIRST AUTHENTICATION (Certificate-based)")
-        print("=" * 70)
+        print("\n" + "=" * 80)
+        print("🔐 FIRST AUTHENTICATION (Certificate-based with Fragmentation)")
+        print("=" * 80)
         
         # First authentication
         print("\n--- DRONE001 First Authentication ---")
@@ -662,9 +850,9 @@ def main():
         print("\n--- DRONE002 First Authentication ---")
         drone2.authenticate_with_gateway("localhost", 8282)
         
-        print("\n" + "=" * 70)
+        print("\n" + "=" * 80)
         print("⚡ SUBSEQUENT AUTHENTICATIONS (PUF-based)")
-        print("=" * 70)
+        print("=" * 80)
         
         time.sleep(1)  # Brief pause
         
@@ -678,9 +866,9 @@ def main():
         print("\n--- DRONE001 Third Authentication (PUF) ---")
         drone1.authenticate_with_gateway("localhost", 8282)
         
-        print("\n" + "=" * 70)
+        print("\n" + "=" * 80)
         print("📊 PERFORMANCE TEST")
-        print("=" * 70)
+        print("=" * 80)
         
         # Performance test
         test_drone = Drone("TESTDRONE")
@@ -703,13 +891,12 @@ def main():
         if puf_time > 0:
             print(f"Speed Improvement:          {cert_time/puf_time:.1f}x faster")
         
-        print("\n" + "=" * 70)
+        print("\n" + "=" * 80)
         print("🛡️  SECURITY FEATURES")
-        print("=" * 70)
+        print("=" * 80)
         
-        
-        # Show actual key sizes
-        test_key = ec.generate_private_key(ec.SECP192R1())
+        # Show actual key sizes for P-256
+        test_key = ec.generate_private_key(ec.SECP256R1())
         test_pub_key = test_key.public_key()
         
         pem_size = len(test_pub_key.public_bytes(
@@ -722,16 +909,15 @@ def main():
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         ))
         
-        raw_point = test_pub_key.public_numbers()
-        raw_size = 49  # 1 byte prefix + 24 bytes x + 24 bytes y for P-192
+        # P-256 raw point size: 1 byte prefix + 32 bytes x + 32 bytes y = 65 bytes
+        raw_size = 65  
         
-        print(f"\n📐 Actual Key Sizes (P-192):")
+        print(f"\n📐 Actual Key Sizes (P-256 - 256-bit):")
         print(f"   PEM Format:        {pem_size} bytes")
         print(f"   DER Format:        {der_size} bytes") 
         print(f"   Raw Point:         {raw_size} bytes")
         
-        print(f"\n{'='*70}")
-        print("🎉 Demo completed successfully!")
+        
         
     except KeyboardInterrupt:
         print("\n\n⚠️  Demo interrupted by user")
