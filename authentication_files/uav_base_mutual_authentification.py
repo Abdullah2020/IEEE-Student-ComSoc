@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """
-Working Drone-Gateway Authentication System with 256-bit ECC Keys
 Implements mutual authentication using certificates and PUF-based lightweight authentication
 """
 
