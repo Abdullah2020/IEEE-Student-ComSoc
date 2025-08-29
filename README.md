@@ -78,7 +78,9 @@ python authentication_files/uav_base_mutual_authentification.py
 
 ## System Model
 
-![System Model](docs/system-model/system_model.png)
+![System Model](wireless_communication_files/Results/System_Model_final.png)
+
+As illustrated in the figure above, the proposed solution is a heterogeneous LoRa-based network architecture. It employs clusters of LoRa end devices that transmit data to stationary terrestrial gateways. Periodically, UAVs equipped with LoRa gateways fly over farmland to collect aggregated data from ground gateways and then deliver it to a central service platform once they reach a connected area. Communication between stationary gateways and UAV-mounted LoRa gateways, as well as between the network server and the aerial gateway, is secured through authentication methods.
 
 ---
 
