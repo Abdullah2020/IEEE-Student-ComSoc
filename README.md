@@ -50,11 +50,7 @@ This repository contains two complementary parts:
 
 #### Brief Overview
 
-The script demonstrates a mutual authentication handshake between a UAV and a base entity (challenge–response). It typically:
-
-- Creates/uses identifiers and nonces
-- Computes/verifies message tags (e.g., hashes/MACs)
-- Prints each step and the final success/failure result to the console
+The script demonstrates a mutual authentication handshake between a UAV and a static gateway entity.
 
 #### How to Run
 
