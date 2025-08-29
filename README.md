@@ -2,10 +2,10 @@
 
 ## Team Members
 
-- *Amavi DOSSA*, Student Member, IEEE  
-- *Abdullahi ISA AHMED*, Student Member, IEEE  
+- Amavi DOSSA, *Student Member, IEEE*  
+- Abdullahi ISA AHMED, *Student Member, IEEE*  
 - Abdoul Nasser HASSANE AMADOU  
-- *Abdoul Karim Abdoulaye Hassane SALIAH*, Student Member, IEEE
+- Abdoul Karim Abdoulaye Hassane SALIAH, *Student Member, IEEE*
 
 ---
 
